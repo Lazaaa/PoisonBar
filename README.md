@@ -50,10 +50,3 @@ Settings are saved per character (`PoisonBarDB`).
 - The bar is moved by its own code, because `StartMoving()` on this client only
   moves the picture and the frame snaps back.
 - No hidden tooltip is used: the client shows it on screen even when hidden.
-
----
-
-**Magyarul röviden:** bal klikk a soron feltesz egy mérget, jobb klikk a soron
-kiválasztod, melyik méreg menjen arra a kézre. Az `x35` a fegyveren maradt
-töltetek száma, a kis szám az ikon sarkában pedig a táskádban lévő darabszám.
-A felső sávnál fogva mozgatható, `/pb lock` rögzíti.
