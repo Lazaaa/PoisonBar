@@ -1,11 +1,8 @@
-<img src="images/icon.png" width="96" align="right" alt="PoisonBar">
 
 # PoisonBar
 
 Rogue poison bar for the **Emberveil** server (WoW 1.12.1 API, UE5 client).
 Shows the poison on your weapons and puts a new one on with one click.
-
-![The bar](images/bar.png)
 
 ## What it shows
 
@@ -26,8 +23,6 @@ row is shown.
 | **Left-click** a row | puts the chosen poison on that weapon |
 | **Right-click** a row | choose the poison for that weapon (remembered) |
 | Drag the title bar | move the bar |
-
-![Choosing a poison](images/menu.png)
 
 If a poison is already on the weapon, the "replace enchantment?" question is
 confirmed automatically.
