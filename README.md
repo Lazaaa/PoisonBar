@@ -1,8 +1,11 @@
+<img src="images/icon.png" width="96" align="right" alt="PoisonBar">
 
 # PoisonBar
 
 Rogue poison bar for the **Emberveil** server (WoW 1.12.1 API, UE5 client).
 Shows the poison on your weapons and puts a new one on with one click.
+
+![The bar](images/bar.png)
 
 ## What it shows
 
@@ -16,6 +19,15 @@ The name turns **red** below 3 minutes or 10 charges. When a poison wears off
 you get a sound and an on-screen warning. Without an off-hand weapon only one
 row is shown.
 
+## Fishing pole
+
+With a **fishing pole** in your hand the main-hand row switches to **fishing
+lures** (Shiny Bauble, Nightcrawlers, Bright Baubles, Aquadynamic Fish
+Attractor, ...): right-click lists the lures in your bags with their bonus
+(`+75`), left-click puts the chosen lure on the pole, and the row shows
+`Baubles +75` with the time left. Your dagger poisons stay remembered for
+when you switch back.
+
 ## Usage
 
 | Action | Result |
@@ -23,6 +35,8 @@ row is shown.
 | **Left-click** a row | puts the chosen poison on that weapon |
 | **Right-click** a row | choose the poison for that weapon (remembered) |
 | Drag the title bar | move the bar |
+
+![Choosing a poison](images/menu.png)
 
 If a poison is already on the weapon, the "replace enchantment?" question is
 confirmed automatically.
@@ -50,3 +64,11 @@ Settings are saved per character (`PoisonBarDB`).
 - The bar is moved by its own code, because `StartMoving()` on this client only
   moves the picture and the frame snaps back.
 - No hidden tooltip is used: the client shows it on screen even when hidden.
+
+---
+
+**Magyarul röviden:** bal klikk a soron feltesz egy mérget, jobb klikk a soron
+kiválasztod, melyik méreg menjen arra a kézre. Az `x35` a fegyveren maradt
+töltetek száma, a kis szám az ikon sarkában pedig a táskádban lévő darabszám.
+A felső sávnál fogva mozgatható, `/pb lock` rögzíti. Ha horgászbot van a
+kezedben, a sor mérgek helyett csalikat (lure) kínál fel és tesz fel a botra.

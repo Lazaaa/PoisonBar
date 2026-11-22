@@ -17,7 +17,7 @@
 
 PoisonBar = {}
 local PB = PoisonBar
-PB.VERSION = "1.0.4"
+PB.VERSION = "1.1.0"
 
 local getn = table.getn
 local strfind, strlower, strformat, gsub = string.find, string.lower, string.format, string.gsub
@@ -66,30 +66,97 @@ local function isPoisonName(name)
 end
 PB.isPoisonName = isPoisonName
 
--- list of { name, texture, count, bag, slot } (first stack of each kind)
+local function linkId(link)
+    if not link then return nil end
+    local _, _, id = strfind(link, "item:(%d+)")
+    return tonumber(id)
+end
+
+-- fishing lures (by item id, so any client language): short label, bonus
+local LURES = {
+    [6529] = { "Bauble", 25 },        -- Shiny Bauble
+    [6530] = { "Worms", 50 },         -- Nightcrawlers
+    [6811] = { "Fish Lens", 50 },     -- Aquadynamic Fish Lens
+    [6532] = { "Baubles", 75 },       -- Bright Baubles
+    [7307] = { "Flesh Worm", 75 },    -- Flesh Eating Worm
+    [6533] = { "Attractor", 100 },    -- Aquadynamic Fish Attractor
+}
+PB.LURES = LURES
+
+local POLES = {
+    [6256] = true, [6365] = true, [6366] = true, [6367] = true,
+    [12225] = true, [19022] = true, [19970] = true,
+}
+
+local function texHas(tex, word)
+    return tex and strfind(strlower(tex), word, 1, true) ~= nil
+end
+
+-- fishing pole in the main hand: that row works with lures, not poisons
+function PB.HasPole()
+    local link = GetInventoryItemLink("player", 16)
+    if not link then return false end
+    local id = linkId(link)
+    if id and POLES[id] then return true end
+    return texHas(GetInventoryItemTexture("player", 16), "fishingpole")
+end
+
+local function isLureSlot(slot)
+    return slot == 16 and PB.HasPole()
+end
+PB.isLureSlot = isLureSlot
+
+-- the chosen item / what this addon put on, kept apart for pole and blades
+local function choiceOf(slot)
+    if isLureSlot(slot) then return PoisonBarDB.lureChoice end
+    return PoisonBarDB.choice[slot]
+end
+local function setChoice(slot, name)
+    if isLureSlot(slot) then PoisonBarDB.lureChoice = name
+    else PoisonBarDB.choice[slot] = name end
+end
+local function appliedKey(slot)
+    if isLureSlot(slot) then return "lure" end
+    return slot
+end
+
+-- list of { name, texture, count, bag, slot } (first stack of each kind),
+-- for poisons and for fishing lures
 function PB.ScanPoisons()
-    local list, byName = {}, {}
+    local list, byName, lures, lureByName = {}, {}, {}, {}
     for bag = 0, 4 do
         local slots = GetContainerNumSlots(bag) or 0
         for slot = 1, slots do
-            local name = linkName(GetContainerItemLink(bag, slot))
-            if isPoisonName(name) then
+            local link = GetContainerItemLink(bag, slot)
+            local name = linkName(link)
+            local id = linkId(link)
+            local L, B
+            if id and LURES[id] then L, B = lures, lureByName
+            elseif isPoisonName(name) then L, B = list, byName end
+            if L then
                 local tex, count = GetContainerItemInfo(bag, slot)
                 count = count or 1
-                local p = byName[name]
+                local p = B[name]
                 if p then
                     p.count = p.count + count
                 else
-                    p = { name = name, texture = tex, count = count, bag = bag, slot = slot }
-                    byName[name] = p
-                    table.insert(list, p)
+                    p = { name = name, texture = tex, count = count, bag = bag, slot = slot, id = id }
+                    B[name] = p
+                    table.insert(L, p)
                 end
             end
         end
     end
     table.sort(list, function(a, b) return a.name < b.name end)
+    table.sort(lures, function(a, b) return LURES[a.id][2] < LURES[b.id][2] end)
     PB.poisons, PB.poisonByName = list, byName
+    PB.lures, PB.lureByName = lures, lureByName
     return list
+end
+
+local function itemsFor(slot)
+    if isLureSlot(slot) then return PB.lures or {}, PB.lureByName or {} end
+    return PB.poisons or {}, PB.poisonByName or {}
 end
 
 ----------------------------------------------------------------------
@@ -103,7 +170,7 @@ function PB.WeaponPoison(slot)
     if slot == 16 then has, ms, charges = mh, mhTime, mhCharges
     else has, ms, charges = oh, ohTime, ohCharges end
     if not has then return false end
-    local name = PoisonBarDB and PoisonBarDB.applied[slot]
+    local name = PoisonBarDB and PoisonBarDB.applied[appliedKey(slot)]
     return true, (ms or 0) / 1000, charges or 0, name
 end
 
@@ -129,13 +196,15 @@ function PB.Apply(slot)
         return
     end
     PB.ScanPoisons()
-    local name = PoisonBarDB.choice[slot]
-    local p = name and PB.poisonByName[name]
+    local lure = isLureSlot(slot)
+    local name = choiceOf(slot)
+    local _, byName = itemsFor(slot)
+    local p = name and byName[name]
     if not p then
         if name then
             echo("no " .. name .. " in your bags")
         else
-            echo("right-click the " .. strlower(HAND[slot]) .. " row to choose a poison")
+            echo("right-click the " .. strlower(HAND[slot]) .. " row to choose a " .. (lure and "fishing lure" or "poison"))
         end
         return
     end
@@ -148,10 +217,15 @@ function PB.Apply(slot)
 
     call("UseContainerItem", "UseContainerItem(%d,%d)", p.bag, p.slot)
 
-    -- the poison now waits for a target item: the weapon
+    -- a poison now waits for a target item: the weapon. A lure may go on
+    -- the equipped pole by itself, without asking for a target.
     local targeting = true
     if SpellIsTargeting then targeting = SpellIsTargeting() end
     if not targeting then
+        if lure then
+            pending[appliedKey(slot)] = { slot = slot, name = p.name, t = GetTime(), prev = before or -1 }
+            return
+        end
         echo("could not use " .. p.name)
         return
     end
@@ -166,7 +240,7 @@ function PB.Apply(slot)
         if ReplaceEnchant then pcall(ReplaceEnchant) end
         if StaticPopup_Hide then StaticPopup_Hide("REPLACE_ENCHANT") end
     end
-    pending[slot] = { name = p.name, t = GetTime(), prev = before or -1 }
+    pending[appliedKey(slot)] = { slot = slot, name = p.name, t = GetTime(), prev = before or -1 }
 end
 
 ----------------------------------------------------------------------
@@ -312,7 +386,7 @@ local function menuRow(i)
     hl:SetAllPoints(r)
     hl:SetTexture(1, 1, 1, 0.15)
     r:SetScript("OnClick", function()
-        PoisonBarDB.choice[menu.slot] = this.poison
+        setChoice(menu.slot, this.poison)
         menu:Hide()
         PB.Update()
         if this.poison then
@@ -327,23 +401,26 @@ function PB.OpenMenu(slot, anchor)
     if not menu then return end
     if menu:IsShown() and menu.slot == slot then menu:Hide() return end
     menu.slot = slot
-    menu.title:SetText(HAND[slot] .. " poison:")
-    local list = PB.ScanPoisons()
+    local lure = isLureSlot(slot)
+    menu.title:SetText(lure and "Fishing lure:" or (HAND[slot] .. " poison:"))
+    PB.ScanPoisons()
+    local list = itemsFor(slot)
     local n = getn(list)
     for i = 1, n do
         local r = menuRow(i)
         r.poison = list[i].name
         r.icon:SetTexture(list[i].texture)
         r.icon:Show()
-        local mark = PoisonBarDB.choice[slot] == list[i].name and "|cff9cff4f> |r" or ""
-        r.text:SetText(mark .. list[i].name .. "  |cffaaaaaa(" .. list[i].count .. ")|r")
+        local mark = choiceOf(slot) == list[i].name and "|cff9cff4f> |r" or ""
+        local bonus = lure and LURES[list[i].id] and ("  |cff80c0ff+" .. LURES[list[i].id][2] .. "|r") or ""
+        r.text:SetText(mark .. list[i].name .. bonus .. "  |cffaaaaaa(" .. list[i].count .. ")|r")
         r:Show()
     end
     -- last row: none
     local r = menuRow(n + 1)
     r.poison = nil
     r.icon:Hide()
-    r.text:SetText(n == 0 and "|cffff8080no poisons in your bags|r" or "|cffaaaaaanone|r")
+    r.text:SetText(n == 0 and ("|cffff8080no " .. (lure and "fishing lures" or "poisons") .. " in your bags|r") or "|cffaaaaaanone|r")
     r:Show()
     for i = n + 2, getn(menu.rows) do menu.rows[i]:Hide() end
     menu:SetHeight(16 + 12 + (n + 1) * 21)
@@ -400,8 +477,8 @@ local function buildRow(i, slot)
         else
             GameTooltip:SetText(HAND[this.slot], 1, 1, 1)
         end
-        GameTooltip:AddLine("Left-click: apply " .. (PoisonBarDB.choice[this.slot] or "(choose first)"), 0.6, 1, 0.3)
-        GameTooltip:AddLine("Right-click: choose poison", 0.6, 1, 0.3)
+        GameTooltip:AddLine("Left-click: apply " .. (choiceOf(this.slot) or "(choose first)"), 0.6, 1, 0.3)
+        GameTooltip:AddLine(isLureSlot(this.slot) and "Right-click: choose fishing lure" or "Right-click: choose poison", 0.6, 1, 0.3)
         GameTooltip:Show()
     end)
     r:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -451,7 +528,6 @@ local warned = {}
 function PB.Update()
     if not bar then return end
     bar.title.lock:SetText(PoisonBarDB.locked and "|cff888888locked|r" or "")
-    local poisons = PB.poisonByName or {}
     local shown = 0
     for i = 1, 2 do
         local r = rows[i]
@@ -466,8 +542,10 @@ function PB.Update()
             r:Show()
             r.weapon:SetTexture(GetInventoryItemTexture("player", slot))
 
-            local choice = PoisonBarDB.choice[slot]
-            local p = choice and poisons[choice]
+            local lure = isLureSlot(slot)
+            local _, items = itemsFor(slot)
+            local choice = choiceOf(slot)
+            local p = choice and items[choice]
             if p then
                 r.poison:SetTexture(p.texture)
                 r.poison:SetVertexColor(1, 1, 1)
@@ -484,24 +562,38 @@ function PB.Update()
             end
 
             local has, sec, charges, name = PB.WeaponPoison(slot)
+            local key = appliedKey(slot)
             if has then
-                local low = sec < PoisonBarDB.warnMinutes * 60 or (charges > 0 and charges < PoisonBarDB.warnCharges)
+                local low
+                if lure then
+                    low = sec < 60 -- lures last 10 minutes
+                else
+                    low = sec < PoisonBarDB.warnMinutes * 60 or (charges > 0 and charges < PoisonBarDB.warnCharges)
+                end
                 local col = low and "|cffff5040" or "|cff9cff4f"
-                r.name:SetText(col .. shortName(name or "Poison") .. "|r")
+                local label
+                if lure then
+                    local lp = name and PB.lureByName and PB.lureByName[name]
+                    local info = lp and LURES[lp.id]
+                    label = info and (info[1] .. " +" .. info[2]) or (name or "Lure")
+                else
+                    label = shortName(name or "Poison")
+                end
+                r.name:SetText(col .. label .. "|r")
                 -- charges left on the weapon, marked "x38" so it is not read as a time
                 local c = charges > 0 and (" |cffffd200x" .. charges .. "|r") or ""
                 r.info:SetText(fmtTime(sec) .. c)
-                warned[slot] = nil
+                warned[key] = nil
             else
                 r.name:SetText("|cffff5040none|r")
                 r.info:SetText("")
-                if PoisonBarDB.applied[slot] and not warned[slot] then
+                if PoisonBarDB.applied[key] and not warned[key] then
                     -- it was on and has run out
-                    warned[slot] = true
-                    PoisonBarDB.applied[slot] = nil
+                    warned[key] = true
+                    PoisonBarDB.applied[key] = nil
                     if PoisonBarDB.warnSound and PlaySound then pcall(PlaySound, "RaidWarning") end
                     if UIErrorsFrame then
-                        UIErrorsFrame:AddMessage(HAND[slot] .. " poison has worn off", 1, 0.3, 0.2, 1, 3)
+                        UIErrorsFrame:AddMessage(lure and "Fishing lure has worn off" or (HAND[slot] .. " poison has worn off"), 1, 0.3, 0.2, 1, 3)
                     end
                 end
             end
@@ -517,14 +609,14 @@ end
 -- a poison we started has landed on the weapon: remember its name
 -- (the charges/time come back from GetWeaponEnchantInfo, the name does not)
 function PB.CheckPending()
-    for slot, p in pairs(pending) do
-        local _, sec = PB.WeaponPoison(slot)
+    for key, p in pairs(pending) do
+        local _, sec = PB.WeaponPoison(p.slot)
         if sec and sec > (p.prev or -1) + 60 then
-            -- fresh poison: more time left than before the click
-            PoisonBarDB.applied[slot] = p.name
-            pending[slot] = nil
+            -- fresh poison/lure: more time left than before the click
+            PoisonBarDB.applied[key] = p.name
+            pending[key] = nil
         elseif GetTime() - p.t > 8 then
-            pending[slot] = nil -- cancelled or interrupted
+            pending[key] = nil -- cancelled or interrupted
         end
     end
 end
