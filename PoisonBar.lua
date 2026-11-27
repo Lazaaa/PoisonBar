@@ -9,6 +9,9 @@
     Right-click the row  : choose the poison for that weapon
     Drag the title bar   : move the bar (/pb lock to lock it)
 
+    Right-click a locked box in your bags: casts Pick Lock on it
+    (/pb pick turns this on/off)
+
   Written for Lua 5.0 and 5.1 (no "#", no string methods, no select).
   All UI is built in Lua; the bar is moved by hand from the cursor, because
   StartMoving() on the Emberveil client only moves the picture and the
@@ -17,7 +20,7 @@
 
 PoisonBar = {}
 local PB = PoisonBar
-PB.VERSION = "1.1.0"
+PB.VERSION = "1.2.0"
 
 local getn = table.getn
 local strfind, strlower, strformat, gsub = string.find, string.lower, string.format, string.gsub
@@ -32,6 +35,7 @@ local DEFAULTS = {
     warnMinutes = 3,     -- name turns red below this many minutes
     warnCharges = 10,    -- ... or below this many charges
     warnSound = true,    -- one sound when a poison runs out
+    autoPick = true,     -- right-click on a locked box casts Pick Lock
     choice = {},         -- [16] / [17] = poison name chosen for that hand
     applied = {},        -- [16] / [17] = poison put on by this addon (name)
 }
@@ -241,6 +245,118 @@ function PB.Apply(slot)
         if StaticPopup_Hide then StaticPopup_Hide("REPLACE_ENCHANT") end
     end
     pending[appliedKey(slot)] = { slot = slot, name = p.name, t = GetTime(), prev = before or -1 }
+end
+
+----------------------------------------------------------------------
+-- Pick Lock on locked boxes (right-click in the bags)
+----------------------------------------------------------------------
+
+-- lockboxes and junkboxes by item id (any client language)
+local LOCKBOXES = {
+    [4632] = true,  -- Ornate Bronze Lockbox
+    [4633] = true,  -- Heavy Bronze Lockbox
+    [4634] = true,  -- Iron Lockbox
+    [4636] = true,  -- Strong Iron Lockbox
+    [4637] = true,  -- Steel Lockbox
+    [4638] = true,  -- Reinforced Steel Lockbox
+    [5758] = true,  -- Mithril Lockbox
+    [5759] = true,  -- Thorium Lockbox
+    [5760] = true,  -- Eternium Lockbox
+    [6354] = true,  -- Small Locked Chest
+    [6355] = true,  -- Sturdy Locked Chest
+    [13875] = true, -- Ironbound Locked Chest
+    [13918] = true, -- Reinforced Locked Chest
+    [16882] = true, -- Battered Junkbox
+    [16883] = true, -- Worn Junkbox
+    [16884] = true, -- Sturdy Junkbox
+    [16885] = true, -- Heavy Junkbox
+}
+PB.LOCKBOXES = LOCKBOXES
+
+local LOCK_WORDS = { "lockbox", "junkbox", "locked chest", "schließkassette", "coffret" }
+
+local function isLockbox(id, name)
+    if id and LOCKBOXES[id] then return true end
+    if not name then return false end
+    local n = strlower(name)
+    for i = 1, getn(LOCK_WORDS) do
+        if strfind(n, LOCK_WORDS[i], 1, true) then return true end
+    end
+    return false
+end
+PB.isLockbox = isLockbox
+
+-- Is the box still locked? Read from the tooltip that is already on screen
+-- for the bag slot under the mouse (no hidden scan tooltip, see the event
+-- handler). true = "Locked" line, false = no such line, nil = can't tell.
+local function tooltipLocked(name)
+    if not GameTooltip or not GameTooltip:IsVisible() then return nil end
+    local first = getglobal("GameTooltipTextLeft1")
+    if not first or first:GetText() ~= name then return nil end
+    local word = LOCKED or "Locked"
+    local lines = GameTooltip:NumLines() or 0
+    for i = 2, lines do
+        local fs = getglobal("GameTooltipTextLeft" .. i)
+        local t = fs and fs:GetText()
+        if t == word then return true end
+    end
+    return false
+end
+
+-- Pick Lock in the spell book (by icon, so any client language)
+local function findPickLock()
+    local book = BOOKTYPE_SPELL or "spell"
+    local i = 1
+    while true do
+        local name = GetSpellName(i, book)
+        if not name then return nil end
+        if name == "Pick Lock" or texHas(GetSpellTexture(i, book), "moonkey") then
+            -- the last rank is the highest, keep going while it repeats
+            local nextName = GetSpellName(i + 1, book)
+            if nextName ~= name then return i end
+        end
+        i = i + 1
+    end
+end
+PB.findPickLock = findPickLock
+
+local picked = {}   -- ["bag:slot"] = link: opened by Pick Lock this session
+local pickCast      -- { key, link, started, failed } while Pick Lock is cast
+
+function PB.TryPickLock(bag, slot)
+    if not PoisonBarDB or not PoisonBarDB.autoPick then return false end
+    if SpellIsTargeting and SpellIsTargeting() then return false end
+    if CursorHasItem and CursorHasItem() then return false end
+    local link = GetContainerItemLink(bag, slot)
+    if not link then return false end
+    local name = linkName(link)
+    if not isLockbox(linkId(link), name) then return false end
+
+    local key = bag .. ":" .. slot
+    local locked = tooltipLocked(name)
+    if locked == false then return false end                     -- open it
+    if locked == nil and picked[key] == link then return false end -- open it
+
+    local spell = findPickLock()
+    if not spell then return false end -- not a rogue / not learned yet: open
+
+    call("CastSpell", "CastSpell(%d,'spell')", spell, BOOKTYPE_SPELL or "spell")
+    if SpellIsTargeting and SpellIsTargeting() then
+        call("PickupContainerItem", "PickupContainerItem(%d,%d)", bag, slot)
+        pickCast = { key = key, link = link, t = GetTime() }
+    end
+    return true
+end
+
+-- every way of using a bag item (Blizzard bags and bag addons alike)
+-- goes through UseContainerItem: a locked box is picked instead of opened
+local origUseContainerItem = UseContainerItem
+if origUseContainerItem then
+    UseContainerItem = function(bag, slot, a3, a4)
+        local ok, done = pcall(PB.TryPickLock, bag, slot)
+        if ok and done then return end
+        return origUseContainerItem(bag, slot, a3, a4)
+    end
 end
 
 ----------------------------------------------------------------------
@@ -626,6 +742,10 @@ frame:RegisterEvent("VARIABLES_LOADED")
 frame:RegisterEvent("BAG_UPDATE")
 frame:RegisterEvent("UNIT_INVENTORY_CHANGED")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
+frame:RegisterEvent("SPELLCAST_START")
+frame:RegisterEvent("SPELLCAST_STOP")
+frame:RegisterEvent("SPELLCAST_FAILED")
+frame:RegisterEvent("SPELLCAST_INTERRUPTED")
 
 local loaded = false
 
@@ -647,6 +767,20 @@ frame:SetScript("OnEvent", function()
         return
     end
     if not loaded then return end
+    -- Pick Lock: remember the box as opened once the cast went through
+    if event == "SPELLCAST_START" then
+        if pickCast and GetTime() - pickCast.t < 3 then pickCast.started = true end
+        return
+    elseif event == "SPELLCAST_FAILED" or event == "SPELLCAST_INTERRUPTED" then
+        if pickCast then pickCast.failed = true end
+        return
+    elseif event == "SPELLCAST_STOP" then
+        if pickCast and pickCast.started then
+            if not pickCast.failed then picked[pickCast.key] = pickCast.link end
+            pickCast = nil
+        end
+        return
+    end
     if event == "BAG_UPDATE" or event == "PLAYER_ENTERING_WORLD" then
         PB.ScanPoisons()
     end
@@ -697,10 +831,14 @@ SlashCmdList["POISONBAR"] = function(msg)
     elseif cmd == "sound" then
         PoisonBarDB.warnSound = not PoisonBarDB.warnSound
         echo("sound " .. (PoisonBarDB.warnSound and "on" or "off"))
+    elseif cmd == "pick" then
+        PoisonBarDB.autoPick = not PoisonBarDB.autoPick
+        echo("auto Pick Lock " .. (PoisonBarDB.autoPick and "on" or "off"))
     else
         echo("left-click a row: apply poison, right-click: choose poison")
         echo("/pb mh | oh - apply (for macros/keys)")
         echo("/pb lock, /pb reset, /pb show | hide")
         echo("/pb warn <minutes>, /pb sound")
+        echo("/pb pick - right-click a locked box: Pick Lock (" .. (PoisonBarDB.autoPick and "on" or "off") .. ")")
     end
 end
